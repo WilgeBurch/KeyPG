@@ -1,9 +1,11 @@
 fastapi
-uvicorn[standard]
+uvicorn
 sqlalchemy
 psycopg2-binary
-passlib[bcrypt]
-python-jose[cryptography]
+passlib[bcrypt]==1.7.4
+bcrypt==3.2.2
+python-jose
+pydantic
 aiofiles
 apscheduler
 python-multipart

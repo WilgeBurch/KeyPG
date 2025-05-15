@@ -1,11 +1,76 @@
 import sys
 import os
+import requests
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QListWidget, QListWidgetItem, QFileIconProvider,
-    QLabel, QHBoxLayout, QPushButton, QProgressBar, QSizePolicy
+    QLabel, QHBoxLayout, QPushButton, QProgressBar, QSizePolicy, QLineEdit, QDialog, QMessageBox, QInputDialog
 )
 from PyQt5.QtCore import Qt, QSize, QFileInfo
 from PyQt5.QtGui import QPalette, QColor, QFont
+
+API_URL = "http://localhost:8000"
+
+class AuthDialog(QDialog):
+    def __init__(self):
+        super().__init__()
+        self.token = None
+        self.setWindowTitle("Вход или регистрация")
+        self.setMinimumWidth(300)
+        layout = QVBoxLayout(self)
+        self.login_input = QLineEdit()
+        self.login_input.setPlaceholderText("Логин")
+        self.password_input = QLineEdit()
+        self.password_input.setPlaceholderText("Пароль")
+        self.password_input.setEchoMode(QLineEdit.Password)
+        self.login_btn = QPushButton("Войти")
+        self.register_btn = QPushButton("Зарегистрироваться")
+        layout.addWidget(QLabel("Введите логин и пароль"))
+        layout.addWidget(self.login_input)
+        layout.addWidget(self.password_input)
+        layout.addWidget(self.login_btn)
+        layout.addWidget(self.register_btn)
+        self.setLayout(layout)
+        self.login_btn.clicked.connect(self.login)
+        self.register_btn.clicked.connect(self.register)
+
+    def login(self):
+        user = self.login_input.text().strip()
+        pwd = self.password_input.text().strip()
+        if not user or not pwd:
+            QMessageBox.warning(self, "Ошибка", "Введите логин и пароль")
+            return
+        data = {
+            "username": user,
+            "password": pwd
+        }
+        try:
+            resp = requests.post(f"{API_URL}/token", data=data)
+            if resp.status_code == 200:
+                self.token = resp.json().get("access_token")
+                self.accept()
+            else:
+                QMessageBox.warning(self, "Ошибка", "Неверный логин или пароль")
+        except Exception as e:
+            QMessageBox.warning(self, "Ошибка", f"Ошибка подключения: {e}")
+
+    def register(self):
+        user = self.login_input.text().strip()
+        pwd = self.password_input.text().strip()
+        if not user or not pwd:
+            QMessageBox.warning(self, "Ошибка", "Введите логин и пароль")
+            return
+        data = {
+            "username": user,
+            "password": pwd
+        }
+        try:
+            resp = requests.post(f"{API_URL}/register", data=data)
+            if resp.status_code == 200:
+                QMessageBox.information(self, "Успех", "Регистрация прошла успешно. Теперь войдите.")
+            else:
+                QMessageBox.warning(self, "Ошибка", f"{resp.json().get('detail', resp.text)}")
+        except Exception as e:
+            QMessageBox.warning(self, "Ошибка", f"Ошибка подключения: {e}")
 
 class FileDropListWidget(QListWidget):
     def __init__(self, parent=None):
@@ -56,10 +121,11 @@ class FileDropListWidget(QListWidget):
             pass
 
 class FileListWidget(QWidget):
-    def __init__(self):
+    def __init__(self, token):
         super().__init__()
+        self.token = token
         self.setWindowTitle("Список файлов")
-        self.setMinimumSize(550, 390)
+        self.setMinimumSize(550, 450)
         self.init_ui()
 
     def init_ui(self):
@@ -167,7 +233,7 @@ class FileListWidget(QWidget):
         header.setObjectName("Header")
         main_layout.addWidget(header, alignment=Qt.AlignLeft)
 
-        file_list_label = QLabel("Выбранные файлы")
+        file_list_label = QLabel("Выбранные файлы для загрузки")
         file_list_label.setObjectName("Section")
         main_layout.addWidget(file_list_label, alignment=Qt.AlignLeft)
 
@@ -177,21 +243,29 @@ class FileListWidget(QWidget):
 
         bottom_layout = QHBoxLayout()
         bottom_layout.setSpacing(10)
-        self.upload_button = QPushButton("Загрузить в базу")
-        self.restore_button = QPushButton("Восстановить")
+        self.upload_button = QPushButton("Загрузить")
+        self.refresh_button = QPushButton("Обновить список")
+        self.download_button = QPushButton("Скачать выбранный")
         self.upload_button.setMinimumWidth(120)
-        self.restore_button.setMinimumWidth(120)
+        self.refresh_button.setMinimumWidth(120)
+        self.download_button.setMinimumWidth(120)
         bottom_layout.addWidget(self.upload_button)
-        bottom_layout.addWidget(self.restore_button)
+        bottom_layout.addWidget(self.refresh_button)
+        bottom_layout.addWidget(self.download_button)
         bottom_layout.addStretch(1)
         main_layout.addLayout(bottom_layout)
 
         status_layout = QVBoxLayout()
         status_layout.setContentsMargins(0, 12, 0, 0)
-        status_label = QLabel("Статус операции")
+        status_label = QLabel("Список ваших файлов")
         status_label.setObjectName("Section")
         status_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         status_layout.addWidget(status_label)
+
+        self.files_list = QListWidget()
+        self.files_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        status_layout.addWidget(self.files_list)
+
         self.progress_bar = QProgressBar()
         self.progress_bar.setTextVisible(True)
         self.progress_bar.setValue(0)
@@ -202,8 +276,95 @@ class FileListWidget(QWidget):
 
         self.setLayout(main_layout)
 
+        self.upload_button.clicked.connect(self.upload_files)
+        self.refresh_button.clicked.connect(self.populate_files)
+        self.download_button.clicked.connect(self.download_selected)
+
+        self.populate_files()
+
+    def upload_files(self):
+        total = self.file_list.count()
+        if not total:
+            QMessageBox.information(self, "Нет файлов", "Добавьте файлы для загрузки.")
+            return
+
+        headers = {'Authorization': f'Bearer {self.token}'}
+        self.progress_bar.setValue(0)
+        for i in range(total):
+            file_path = self.file_list.item(i).toolTip()
+            if file_path:
+                try:
+                    with open(file_path, "rb") as f:
+                        files = {'file': (os.path.basename(file_path), f)}
+                        resp = requests.post(f"{API_URL}/upload", headers=headers, files=files)
+                        percent = int(100 * (i+1) / total)
+                        self.progress_bar.setValue(percent)
+                        if resp.status_code == 200:
+                            self.progress_bar.setFormat(f"Загружено {i+1}/{total}")
+                        else:
+                            self.progress_bar.setFormat(f"Ошибка: {resp.text}")
+                            return
+                except Exception as e:
+                    self.progress_bar.setFormat(f"Ошибка: {e}")
+                    return
+        self.progress_bar.setFormat("Все файлы загружены!")
+        self.file_list.clear()
+        self.populate_files()
+
+    def populate_files(self):
+        self.files_list.clear()
+        headers = {'Authorization': f'Bearer {self.token}'}
+        try:
+            resp = requests.get(f"{API_URL}/files", headers=headers)
+            if resp.status_code == 200:
+                for f in resp.json():
+                    item = QListWidgetItem(f"{f['filename']}{f['extension']} ({f['uuid']})")
+                    item.setToolTip(f['uuid'])
+                    self.files_list.addItem(item)
+            else:
+                QMessageBox.warning(self, "Ошибка", "Не удалось получить список файлов.")
+        except Exception as e:
+            QMessageBox.warning(self, "Ошибка", f"Ошибка при получении списка: {e}")
+
+    def download_selected(self):
+        selected = self.files_list.currentItem()
+        if not selected:
+            QMessageBox.information(self, "Нет выбора", "Выберите файл для скачивания.")
+            return
+        uuid = selected.toolTip()
+        headers = {'Authorization': f'Bearer {self.token}'}
+        try:
+            resp = requests.get(f"{API_URL}/download/{uuid}", headers=headers, stream=True)
+            if resp.status_code == 200:
+                file_name, ok = QInputDialog.getText(self, "Сохранить как", "Введите имя файла для сохранения:",
+                                                     text=selected.text().split(" (")[0])
+                if not ok or not file_name:
+                    return
+                save_path = os.path.join(os.getcwd(), file_name)
+                total_length = resp.headers.get('content-length')
+                dl = 0
+                with open(save_path, "wb") as f:
+                    if total_length is None:
+                        f.write(resp.content)
+                    else:
+                        total_length = int(total_length)
+                        for chunk in resp.iter_content(chunk_size=4096):
+                            if chunk:
+                                dl += len(chunk)
+                                f.write(chunk)
+                                percent = int(100 * dl / total_length)
+                                self.progress_bar.setValue(percent)
+                self.progress_bar.setFormat("Файл скачан!")
+            else:
+                QMessageBox.warning(self, "Ошибка", f"Ошибка скачивания: {resp.text}")
+        except Exception as e:
+            QMessageBox.warning(self, "Ошибка", f"Ошибка при скачивании: {e}")
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    window = FileListWidget()
+    auth = AuthDialog()
+    if not auth.exec_():
+        sys.exit(0)
+    window = FileListWidget(token=auth.token)
     window.show()
     sys.exit(app.exec_())
