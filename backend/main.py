@@ -175,6 +175,22 @@ async def download_file(file_uuid: str, current_user: User = Depends(get_current
         raise HTTPException(status_code=404, detail="Файл отсутствует на сервере")
     return fastapi.responses.FileResponse(path=file_path, filename=f"{db_file.filename}{db_file.extension}", media_type="application/octet-stream")
 
+# Удаление файла пользователя по uuid
+@app.delete("/delete/{file_uuid}")
+async def delete_file(file_uuid: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    db_file = db.query(FileInfo).filter(FileInfo.uuid == file_uuid, FileInfo.owner_id == current_user.id).first()
+    if not db_file:
+        raise HTTPException(status_code=404, detail="Файл не найден")
+    file_path = os.path.join(UPLOAD_FOLDER, f"{db_file.uuid}{db_file.extension}")
+    try:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Не удалось удалить файл с диска")
+    db.delete(db_file)
+    db.commit()
+    return {"msg": "Файл успешно удалён"}
+
 # Очистка БД от отсутствующих файлов
 def clean_missing_files():
     db = SessionLocal()
