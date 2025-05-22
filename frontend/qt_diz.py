@@ -587,7 +587,12 @@ class FileListWidget(QWidget):
                 for f in resp.json():
                     file_info = QFileInfo(f['filename'] + f['extension'])
                     icon = QFileIconProvider().icon(file_info)
-                    item = QListWidgetItem(icon, f"{f['filename']}{f['extension']} ({f['uuid']})")
+                    # Добавляем размер в подпись
+                    size_str = f"{f['size']} Б" if 'size' in f and f['size'] is not None else "?"
+                    item = QListWidgetItem(
+                        icon,
+                        f"{f['filename']}{f['extension']} ({f['uuid']}, {size_str})"
+                    )
                     item.setToolTip(f['uuid'])
                     item.setData(Qt.UserRole, (f['filename'], f['extension']))
                     item.setSizeHint(QSize(0, 28))
@@ -603,26 +608,38 @@ class FileListWidget(QWidget):
             CustomMessageBox.information(self, "Нет выбора", "Выберите файл(ы) для скачивания.")
             return
         headers = {'Authorization': f'Bearer {self.token}'}
-        # Сумма общего размера
-        total_size = 0
+        # Получаем карту uuid -> size из базы
+        files_metadata = {}  # uuid: size
+        try:
+            resp = requests.get(f"{API_URL}/files", headers=headers)
+            if resp.status_code == 200:
+                for f in resp.json():
+                    files_metadata[f['uuid']] = f.get('size', 0)
+        except Exception:
+            pass
+
         files_info = []
+        total_size = 0
         for selected in selecteds:
             uuid = selected.toolTip()
             filename, extension = selected.data(Qt.UserRole)
-            # HEAD-запрос для размера
-            try:
-                r = requests.head(f"{API_URL}/download/{uuid}", headers=headers)
-                size = int(r.headers.get('content-length', 0))
-            except Exception:
-                size = 0
+            size = files_metadata.get(uuid)
+            # Fallback: если размер не получили — делаем HEAD-запрос
+            if size is None or size == 0:
+                try:
+                    r = requests.head(f"{API_URL}/download/{uuid}", headers=headers)
+                    size = int(r.headers.get('content-length', 0))
+                except Exception:
+                    size = 0
             files_info.append((uuid, filename, extension, size))
-            total_size += size
+            if size > 0:
+                total_size += size
+
         loaded = 0
         self.download_progress.set_progress(0, "Скачивание файлов...", 0, total_size)
-        # Скачивание — суммарный прогресс
         for uuid, filename, extension, filesize in files_info:
             self.download_progress.set_progress(
-                int(100*loaded/total_size) if total_size else 0,
+                int(100 * loaded / total_size) if total_size else 0,
                 f"Загрузка: {filename+extension}",
                 loaded, total_size
             )
@@ -632,28 +649,24 @@ class FileListWidget(QWidget):
                     from pathlib import Path
                     downloads_folder = str(Path.home() / "Downloads")
                     save_path = os.path.join(downloads_folder, filename + extension)
-                    dl = 0
                     with open(save_path, "wb") as f:
-                        if filesize == 0:
-                            content = resp.content
-                            f.write(content)
-                            dl = len(content)
-                            loaded += dl
-                        else:
-                            for chunk in resp.iter_content(chunk_size=4096):
-                                if chunk:
-                                    dl += len(chunk)
-                                    loaded += len(chunk)
-                                    percent = int(100 * loaded / total_size) if total_size else 0
-                                    self.download_progress.set_progress(
-                                        percent,
-                                        f"Загрузка: {filename+extension}",
-                                        loaded,
-                                        total_size
-                                    )
-                                    QApplication.processEvents()
+                        for chunk in resp.iter_content(chunk_size=4096):
+                            if chunk:
+                                f.write(chunk)
+                                loaded += len(chunk)
+                                # Если размер файла был неизвестен, корректируем total_size на лету
+                                if filesize == 0:
+                                    total_size += len(chunk)
+                                percent = int(100 * loaded / total_size) if total_size else 0
+                                self.download_progress.set_progress(
+                                    percent,
+                                    f"Загрузка: {filename+extension}",
+                                    loaded,
+                                    total_size
+                                )
+                                QApplication.processEvents()
                     self.download_progress.set_progress(
-                        int(100*loaded/total_size) if total_size else 100,
+                        int(100 * loaded / total_size) if total_size else 100,
                         f"Скачан {filename+extension}",
                         loaded,
                         total_size

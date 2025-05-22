@@ -27,9 +27,7 @@ Base = declarative_base()
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# Хэширование паролей
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 # Модели
@@ -47,6 +45,7 @@ class FileInfo(Base):
     extension = Column(String)
     upload_date = Column(DateTime, default=datetime.utcnow)
     uuid = Column(String, unique=True, index=True)
+    size = Column(Integer, default=0)  # Новое поле для размера файла
     owner_id = Column(Integer, ForeignKey("users.id"))
     owner = relationship("User", back_populates="files")
 
@@ -139,17 +138,19 @@ async def upload_file(file: UploadFile = File(...), current_user: User = Depends
     async with aiofiles.open(save_path, 'wb') as out_file:
         content = await file.read()
         await out_file.write(content)
+    size = os.path.getsize(save_path)  # Получаем размер файла на диске
 
     db_file = FileInfo(
         filename=name,
         extension=ext,
         uuid=unique_id,
-        owner_id=current_user.id
+        owner_id=current_user.id,
+        size=size  # Сохраняем размер файла
     )
     db.add(db_file)
     db.commit()
     db.refresh(db_file)
-    return {"uuid": unique_id, "filename": file.filename}
+    return {"uuid": unique_id, "filename": file.filename, "size": size}
 
 # Получение списка файлов пользователя
 @app.get("/files")
@@ -160,7 +161,8 @@ def list_files(current_user: User = Depends(get_current_user), db: Session = Dep
             "uuid": file.uuid,
             "filename": file.filename,
             "extension": file.extension,
-            "upload_date": file.upload_date
+            "upload_date": file.upload_date,
+            "size": file.size  # Возвращаем размер файла
         } for file in files
     ]
 
@@ -212,3 +214,4 @@ scheduler.start()
 # Для корректного завершения планировщика
 import atexit
 atexit.register(lambda: scheduler.shutdown())
+
