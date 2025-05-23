@@ -500,12 +500,14 @@ class FileListWidget(QWidget):
         self.refresh_button = MinimalRoundButton("refresh")
         bottom_row.addWidget(self.refresh_button)
 
-        # Статичный прогрессбар между кнопками, не сжимает кнопки (QSizePolicy.Expanding)
+        # --- Изменение: прогрессбар для скачки теперь Expanding между кнопками ---
         self.download_progress = CustomProgressBar()
         self.download_progress.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         bottom_row.addWidget(self.download_progress)
+
         bottom_row.addSpacing(8)
-        self.download_button = QPushButton("Скачать выбранный")
+        # --- Изменение: кнопка теперь "Скачать" ---
+        self.download_button = QPushButton("Скачать")
         self.download_button.setMinimumWidth(140)
         bottom_row.addWidget(self.download_button, alignment=Qt.AlignRight)
         status_layout.addLayout(bottom_row)
@@ -535,11 +537,10 @@ class FileListWidget(QWidget):
                 self.file_list.takeItem(self.file_list.row(item))
 
     def upload_files(self):
+        # --- ИЗМЕНЕНИЕ: теперь загружаются только выбранные файлы, но НЕВЫБРАННЫЕ НЕ УДАЛЯЮТСЯ из списка
         items = self.file_list.selectedItems()
         if not items:
-            items = [self.file_list.item(i) for i in range(self.file_list.count())]
-        if not items:
-            CustomMessageBox.information(self, "Нет файлов", "Добавьте файлы для загрузки.")
+            CustomMessageBox.information(self, "Нет файлов", "Выберите файлы для загрузки.")
             return
 
         headers = {'Authorization': f'Bearer {self.token}'}
@@ -575,7 +576,9 @@ class FileListWidget(QWidget):
             self.upload_progress.reset()
             self.upload_button.setEnabled(True)
         Timer(0.9, reset_bar).start()
-        self.file_list.clear()
+        # Удаляем только загруженные файлы из file_list
+        for item in items:
+            self.file_list.takeItem(self.file_list.row(item))
         self.populate_files()
 
     def populate_files(self):
@@ -852,7 +855,11 @@ class AuthDialog(QDialog):
                 self.token = resp.json().get("access_token")
                 self.accept()
             else:
-                CustomMessageBox.warning(self, "Ошибка", "Неверный логин или пароль")
+                # --- ИСПРАВЛЕНИЕ: только одно окно при ошибке (убираем дублирование)
+                if resp.status_code == 401 or resp.status_code == 400:
+                    CustomMessageBox.warning(self, "Ошибка", "Неверный логин или пароль")
+                else:
+                    CustomMessageBox.warning(self, "Ошибка", f"Ошибка: {resp.text}")
         except Exception as e:
             CustomMessageBox.warning(self, "Ошибка", f"Ошибка подключения: {e}")
 
