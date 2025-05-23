@@ -9,3 +9,4 @@ pydantic
 aiofiles
 apscheduler
 python-multipart
+neo4j
