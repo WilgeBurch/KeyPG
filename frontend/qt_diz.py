@@ -117,24 +117,23 @@ class MinimalRoundButton(QPushButton):
             painter.drawLine(w//2 - size//4, h//2, w//2 + size//4, h//2)
             painter.drawLine(w//2, h//2 - size//4, w//2, h//2 + size//4)
         elif self.icon_type == "refresh":
-            # Точная круговая стрелка: дуга и маленький острый уголок (указатель)
-            arc_w = size//2
-            arc_rect = QRectF((w-arc_w)//2, (h-arc_w)//2, arc_w, arc_w)
-            painter.setPen(QPen(QColor("#fff"), 3, Qt.SolidLine, Qt.RoundCap))
-            painter.drawArc(arc_rect, 45*16, 270*16)
-            # Указатель стрелки
-            arrow_length = size // 8
-            arrow_width = size // 15
-            theta = -45  # угол кончика
+            # Минималистичная круговая стрелка: тонкая дуга ~280° и стрелочка на конце.
             import math
-            rx = w//2 + arc_w//2*math.cos(math.radians(45))
-            ry = h//2 - arc_w//2*math.sin(math.radians(45))
-            painter.save()
-            painter.translate(rx, ry)
-            painter.rotate(theta)
-            painter.drawLine(0, 0, -arrow_length, -arrow_width)
-            painter.drawLine(0, 0, -arrow_length, arrow_width)
-            painter.restore()
+            arc_w = int(size * 0.6)
+            arc_rect = QRectF((w-arc_w)//2, (h-arc_w)//2, arc_w, arc_w)
+            painter.setPen(QPen(QColor("#fff"), 2.1, Qt.SolidLine, Qt.RoundCap))
+            painter.drawArc(arc_rect, 40*16, 280*16)
+            # Маленькая стрелочка на конце дуги
+            angle = math.radians(40 + 280)
+            r = arc_w / 2
+            end_x = w//2 + r * math.cos(angle)
+            end_y = h//2 - r * math.sin(angle)
+            painter.translate(end_x, end_y)
+            painter.rotate(-60)
+            painter.setPen(QPen(QColor("#fff"), 2.1, Qt.SolidLine, Qt.RoundCap))
+            painter.drawLine(0, 0, -8, -4)
+            painter.drawLine(0, 0, -8, 4)
+            painter.resetTransform()
         painter.end()
 
 class CustomProgressBar(QWidget):
@@ -500,13 +499,11 @@ class FileListWidget(QWidget):
         self.refresh_button = MinimalRoundButton("refresh")
         bottom_row.addWidget(self.refresh_button)
 
-        # --- Изменение: прогрессбар для скачки теперь Expanding между кнопками ---
+        # Прогрессбар для скачки Expanding между кнопками
         self.download_progress = CustomProgressBar()
         self.download_progress.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         bottom_row.addWidget(self.download_progress)
-
         bottom_row.addSpacing(8)
-        # --- Изменение: кнопка теперь "Скачать" ---
         self.download_button = QPushButton("Скачать")
         self.download_button.setMinimumWidth(140)
         bottom_row.addWidget(self.download_button, alignment=Qt.AlignRight)
@@ -537,11 +534,15 @@ class FileListWidget(QWidget):
                 self.file_list.takeItem(self.file_list.row(item))
 
     def upload_files(self):
-        # --- ИЗМЕНЕНИЕ: теперь загружаются только выбранные файлы, но НЕВЫБРАННЫЕ НЕ УДАЛЯЮТСЯ из списка
-        items = self.file_list.selectedItems()
-        if not items:
-            CustomMessageBox.information(self, "Нет файлов", "Выберите файлы для загрузки.")
-            return
+        # Новая логика: если выбраны — загружаются выбранные, если ничего не выбрано, но файлы есть — загружаются все.
+        selected = self.file_list.selectedItems()
+        if not selected:
+            if self.file_list.count() == 0:
+                CustomMessageBox.information(self, "Нет файлов", "Добавьте файлы для загрузки.")
+                return
+            items = [self.file_list.item(i) for i in range(self.file_list.count())]
+        else:
+            items = selected
 
         headers = {'Authorization': f'Bearer {self.token}'}
         total_size = sum(os.path.getsize(item.toolTip()) for item in items)
@@ -590,7 +591,6 @@ class FileListWidget(QWidget):
                 for f in resp.json():
                     file_info = QFileInfo(f['filename'] + f['extension'])
                     icon = QFileIconProvider().icon(file_info)
-                    # Добавляем размер в подпись
                     size_str = f"{f['size']} Б" if 'size' in f and f['size'] is not None else "?"
                     item = QListWidgetItem(
                         icon,
@@ -611,7 +611,6 @@ class FileListWidget(QWidget):
             CustomMessageBox.information(self, "Нет выбора", "Выберите файл(ы) для скачивания.")
             return
         headers = {'Authorization': f'Bearer {self.token}'}
-        # Получаем карту uuid -> size из базы
         files_metadata = {}  # uuid: size
         try:
             resp = requests.get(f"{API_URL}/files", headers=headers)
@@ -627,7 +626,6 @@ class FileListWidget(QWidget):
             uuid = selected.toolTip()
             filename, extension = selected.data(Qt.UserRole)
             size = files_metadata.get(uuid)
-            # Fallback: если размер не получили — делаем HEAD-запрос
             if size is None or size == 0:
                 try:
                     r = requests.head(f"{API_URL}/download/{uuid}", headers=headers)
@@ -657,7 +655,6 @@ class FileListWidget(QWidget):
                             if chunk:
                                 f.write(chunk)
                                 loaded += len(chunk)
-                                # Если размер файла был неизвестен, корректируем total_size на лету
                                 if filesize == 0:
                                     total_size += len(chunk)
                                 percent = int(100 * loaded / total_size) if total_size else 0
@@ -724,6 +721,7 @@ class AuthDialog(QDialog):
         self.setMinimumHeight(220)
         self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self._error_shown = False  # Флаг для предотвращения двойного окна ошибки
         self.init_ui()
 
     def paintEvent(self, event):
@@ -843,7 +841,10 @@ class AuthDialog(QDialog):
         user = self.login_input.text().strip()
         pwd = self.password_input.text().strip()
         if not user or not pwd:
-            CustomMessageBox.warning(self, "Ошибка", "Введите логин и пароль")
+            if not self._error_shown:
+                self._error_shown = True
+                CustomMessageBox.warning(self, "Ошибка", "Введите логин и пароль")
+                self._error_shown = False
             return
         data = {
             "username": user,
@@ -855,13 +856,18 @@ class AuthDialog(QDialog):
                 self.token = resp.json().get("access_token")
                 self.accept()
             else:
-                # --- ИСПРАВЛЕНИЕ: только одно окно при ошибке (убираем дублирование)
-                if resp.status_code == 401 or resp.status_code == 400:
-                    CustomMessageBox.warning(self, "Ошибка", "Неверный логин или пароль")
-                else:
-                    CustomMessageBox.warning(self, "Ошибка", f"Ошибка: {resp.text}")
+                if not self._error_shown:
+                    self._error_shown = True
+                    if resp.status_code in (401, 400):
+                        CustomMessageBox.warning(self, "Ошибка", "Неверный логин или пароль")
+                    else:
+                        CustomMessageBox.warning(self, "Ошибка", f"Ошибка: {resp.text}")
+                    self._error_shown = False
         except Exception as e:
-            CustomMessageBox.warning(self, "Ошибка", f"Ошибка подключения: {e}")
+            if not self._error_shown:
+                self._error_shown = True
+                CustomMessageBox.warning(self, "Ошибка", f"Ошибка подключения: {e}")
+                self._error_shown = False
 
     def register(self):
         user = self.login_input.text().strip()
