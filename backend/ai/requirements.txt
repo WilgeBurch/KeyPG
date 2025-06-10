@@ -1,0 +1,7 @@
+torch
+numpy
+neo4j
+fasttext
+nltk
+python-docx
+pdfplumber
