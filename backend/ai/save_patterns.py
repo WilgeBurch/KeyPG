@@ -12,10 +12,10 @@ hidden_dim = 256
 latent_dim = 64
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-# Параметры Neo4j (Эти строки должны быть в этом файле!)
+# Параметры Neo4j
 neo4j_uri = "bolt://localhost:7687"
 neo4j_user = "neo4j"
-neo4j_password = "your_password"
+neo4j_password = "your_password"  # ЗАМЕНИ на свой реальный пароль!
 
 model_path = os.path.join(os.path.dirname(__file__), 'model.pt')
 model = KeyPGAutoencoder(input_dim, hidden_dim, latent_dim).to(device)
