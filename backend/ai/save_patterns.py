@@ -1,9 +1,10 @@
 import torch
 import os
 import logging
+import hashlib
 from storage import KeyPGStorage
-from nn import KeyPGAutoencoder, preprocess_data
-from text_utils import get_fasttext_model
+from nn import KeyPGAutoencoder
+from text_utils import get_fasttext_model, preprocess_data
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -28,20 +29,41 @@ data_dir = os.path.join(os.path.dirname(__file__), 'data')
 ft_model = get_fasttext_model()
 data_files = [os.path.join(data_dir, f) for f in os.listdir(data_dir) if f.endswith('.txt') or f.endswith('.docx') or f.endswith('.pdf')]
 
-with storage.driver.session() as session:
-    with torch.no_grad():
-        for file in data_files:
-            chunks = preprocess_data(file, ft_model, chunk_size_words=64)
-            if not chunks:
-                continue
-            for chunk in chunks:
-                chunk_tensor = torch.tensor(chunk, dtype=torch.float32).to(device)
-                encoded, _ = model(chunk_tensor)
-                node_id = session.write(storage.add_pattern, encoded.cpu().numpy(), chunk_tensor.cpu().numpy())
-                storage.pattern_usage[node_id] += 1
+BATCH_SIZE = 64  # можно менять для ускорения
 
-storage.optimize_graph(threshold=2)
-storage.adapt_to_usage()
+def hash_pattern(vec):
+    return hashlib.sha256(vec.tobytes()).hexdigest()
+
+all_patterns = []
+file_pattern_hashes = []
+
+with torch.no_grad():
+    for file_idx, file in enumerate(data_files):
+        chunks = preprocess_data(file, ft_model, min_words=40, max_words=90)
+        if not chunks:
+            continue
+        hashes_this_file = []
+        for chunk_vec in chunks:
+            chunk_tensor = torch.tensor(chunk_vec, dtype=torch.float32).to(device)
+            encoded = model.encoder(chunk_tensor).cpu().numpy()
+            pat_hash = hash_pattern(encoded)
+            # Можно добавить оригинальный текст чанка, если нужно восстановление текстом
+            all_patterns.append({
+                "hash": pat_hash,
+                "data": encoded.tolist(),
+                "text": ""  # сюда можно добавить текст чанка, если нужно
+            })
+            hashes_this_file.append(pat_hash)
+        file_pattern_hashes.append({
+            "file_id": file_idx,
+            "pattern_hashes": hashes_this_file
+        })
+
+# Batch insert patterns
+# Чтобы не было дублей, фильтруем по hash (только уникальные паттерны)
+unique_patterns = {p['hash']: p for p in all_patterns}
+storage.batch_add_patterns(list(unique_patterns.values()))
+storage.batch_add_restore_keys(file_pattern_hashes)
+
 storage.close()
-
-logging.info("Сохранение паттернов и оптимизация графа завершены.")
+logging.info("Batch-запись паттернов и ключей восстановления завершена.")

@@ -8,55 +8,44 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 class KeyPGStorage:
     def __init__(self, uri, user, password):
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
-        self.pattern_usage = defaultdict(int)
-        self.hash_to_node = {}
 
     def close(self):
         self.driver.close()
 
-    def add_pattern(self, tx, pattern, data):
-        pattern_hash = hashlib.sha256(pattern.tobytes()).hexdigest()
-        result = tx.run("MATCH (n:Pattern {hash: $hash}) RETURN n", hash=pattern_hash)
-        node = result.single()
-        if node:
-            node_id = node[0].id
-            self.pattern_usage[node_id] += 1
-        else:
-            result = tx.run(
-                "CREATE (n:Pattern {hash: $hash, data: $data}) RETURN id(n)",
-                hash=pattern_hash, data=data.tolist()
-            )
-            node_id = result.single()[0]
-            self.hash_to_node[pattern_hash] = node_id
-            self.pattern_usage[node_id] += 1
-        return node_id
-
-    def add_edge(self, tx, node1, node2):
-        tx.run(
-            "MATCH (a:Pattern), (b:Pattern) WHERE id(a) = $node1 AND id(b) = $node2 "
-            "MERGE (a)-[:NEXT]->(b)",
-            node1=node1, node2=node2
-        )
-
-    def optimize_graph(self, threshold=2):
+    def batch_add_patterns(self, patterns):
+        """
+        patterns: список словарей с полями hash, data (list), text (str)
+        """
         with self.driver.session() as session:
-            nodes_to_remove = [node for node, count in self.pattern_usage.items() if count < threshold]
-            for node in nodes_to_remove:
-                session.run("MATCH (n:Pattern) WHERE id(n) = $node_id DETACH DELETE n", node_id=node)
-                hash_value = next((h for h, n in self.hash_to_node.items() if n == node), None)
-                if hash_value is not None:
-                    del self.hash_to_node[hash_value]
-                del self.pattern_usage[node]
-            logging.info(f"Removed {len(nodes_to_remove)} nodes with usage < {threshold}")
+            session.write_transaction(self._batch_create_nodes, patterns)
 
-    def adapt_to_usage(self):
+    @staticmethod
+    def _batch_create_nodes(tx, patterns):
+        query = """
+        UNWIND $patterns AS pat
+        MERGE (p:Pattern {hash: pat.hash})
+        SET p.data = pat.data, p.text = pat.text
+        """
+        tx.run(query, patterns=patterns)
+
+    def batch_add_restore_keys(self, file_pattern_hashes):
+        """
+        file_pattern_hashes: список словарей вида {'file_id': int, 'pattern_hashes': [str, ...]}
+        """
         with self.driver.session() as session:
-            sorted_nodes = sorted(self.pattern_usage.items(), key=lambda x: x[1], reverse=True)
-            root_id = session.run("MERGE (r:Root) RETURN id(r)").single()[0]
-            for node, _ in sorted_nodes[:len(sorted_nodes)//2]:
-                session.run(
-                    "MATCH (n:Pattern), (r:Root) WHERE id(n) = $node_id AND id(r) = $root_id "
-                    "MERGE (r)-[:FREQUENT]->(n)",
-                    node_id=node, root_id=root_id
-                )
-            logging.info("Adapted graph to frequent usage patterns")
+            session.write_transaction(self._batch_save_restore_keys, file_pattern_hashes)
+
+    @staticmethod
+    def _batch_save_restore_keys(tx, file_pattern_hashes):
+        # Сохраняем маршруты восстановления для файлов (Document) и связи NEXT между паттернами
+        query = """
+        UNWIND $file_pattern_hashes AS fileinfo
+        MERGE (d:Document {id: fileinfo.file_id})
+        SET d.pattern_hashes = fileinfo.pattern_hashes
+        WITH fileinfo
+        UNWIND range(0, size(fileinfo.pattern_hashes)-2) AS idx
+          MATCH (p1:Pattern {hash: fileinfo.pattern_hashes[idx]})
+          MATCH (p2:Pattern {hash: fileinfo.pattern_hashes[idx+1]})
+          MERGE (p1)-[:NEXT_IN_DOC {document: fileinfo.file_id}]->(p2)
+        """
+        tx.run(query, file_pattern_hashes=file_pattern_hashes)

@@ -35,17 +35,30 @@ def get_fasttext_model():
 
 def clean_text(text):
     text = text.lower()
-    text = re.sub(r'[^а-яa-z0-9ё\s]', ' ', text)
+    text = re.sub(r'[^\u0430-\u044fa-z0-9\u0451\s]', ' ', text)
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
-def text_to_chunks(text, chunk_size_words=64):
-    try:
-        from razdel import tokenize
-        words = [t.text for t in tokenize(text)]
-    except ImportError:
-        words = nltk.word_tokenize(text, language='russian')
-    chunks = [words[i:i + chunk_size_words] for i in range(0, len(words), chunk_size_words)]
+def dynamic_fragment(text, min_words=30, max_words=120):
+    """Делит текст на смысловые чанки динамической длины: объединяет предложения до min_words, но не превышает max_words."""
+    from nltk.tokenize import sent_tokenize
+    sentences = sent_tokenize(text, language='russian')
+    chunks, buf, buf_len = [], [], 0
+    for sent in sentences:
+        words = sent.split()
+        buf.append(sent)
+        buf_len += len(words)
+        if buf_len >= min_words:
+            if buf_len > max_words:
+                # если перебор, последний чанк будет чуть больше
+                chunks.append(' '.join(buf[:-1]))
+                buf = [buf[-1]]
+                buf_len = len(buf[-1].split())
+            else:
+                chunks.append(' '.join(buf))
+                buf, buf_len = [], 0
+    if buf:
+        chunks.append(' '.join(buf))
     return chunks
 
 def chunk_to_vector(chunk_words, ft_model):
@@ -81,7 +94,6 @@ def extract_text(file_path, pdf_timeout=180):
             import pdfplumber
         except ImportError:
             raise ImportError("Модуль pdfplumber не установлен. Установите его с помощью 'pip install pdfplumber'")
-
         result = {}
         def pdf_worker():
             try:
@@ -101,7 +113,8 @@ def extract_text(file_path, pdf_timeout=180):
     else:
         raise ValueError(f"Unsupported file type: {ext}")
 
-def preprocess_data(file_path, ft_model, chunk_size_words=64):
+def preprocess_data(file_path, ft_model, min_words=30, max_words=120):
+    """Новая функция предобработки: динамические чанки."""
     try:
         logging.info(f"Обработка файла: {file_path}")
         text = extract_text(file_path)
@@ -109,8 +122,8 @@ def preprocess_data(file_path, ft_model, chunk_size_words=64):
             logging.warning(f"Файл пустой или не удалось извлечь текст: {file_path}")
             return []
         text = clean_text(text)
-        chunks = text_to_chunks(text, chunk_size_words)
-        processed_chunks = [chunk_to_vector(chunk, ft_model) for chunk in chunks if chunk]
+        chunks = dynamic_fragment(text, min_words=min_words, max_words=max_words)
+        processed_chunks = [chunk_to_vector(chunk.split(), ft_model) for chunk in chunks if chunk]
         return processed_chunks
     except Exception as e:
         logging.error(f"Ошибка при обработке файла {file_path}: {e}")
