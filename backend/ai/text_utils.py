@@ -40,7 +40,6 @@ def clean_text(text):
     return text
 
 def dynamic_fragment(text, min_words=30, max_words=120):
-    """Делит текст на смысловые чанки динамической длины: объединяет предложения до min_words, но не превышает max_words."""
     from nltk.tokenize import sent_tokenize
     sentences = sent_tokenize(text, language='russian')
     chunks, buf, buf_len = [], [], 0
@@ -50,7 +49,6 @@ def dynamic_fragment(text, min_words=30, max_words=120):
         buf_len += len(words)
         if buf_len >= min_words:
             if buf_len > max_words:
-                # если перебор, последний чанк будет чуть больше
                 chunks.append(' '.join(buf[:-1]))
                 buf = [buf[-1]]
                 buf_len = len(buf[-1].split())
@@ -114,7 +112,6 @@ def extract_text(file_path, pdf_timeout=180):
         raise ValueError(f"Unsupported file type: {ext}")
 
 def preprocess_data(file_path, ft_model, min_words=30, max_words=120):
-    """Новая функция предобработки: динамические чанки."""
     try:
         logging.info(f"Обработка файла: {file_path}")
         text = extract_text(file_path)
