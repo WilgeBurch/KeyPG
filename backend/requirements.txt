@@ -10,3 +10,9 @@ aiofiles
 apscheduler
 python-multipart
 neo4j
+gensim
+nltk
+numpy
+torch
+pdfplumber
+python-docx

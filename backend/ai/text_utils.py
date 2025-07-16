@@ -5,6 +5,7 @@ import nltk
 import gensim
 import gensim.models.keyedvectors as word2vec
 import logging
+import io
 
 try:
     nltk.data.find("tokenizers/punkt")
@@ -106,6 +107,53 @@ def extract_text(file_path, pdf_timeout=180):
         thread.join(timeout=pdf_timeout)
         if thread.is_alive():
             logging.error(f"PDF обработка {file_path} превысила таймаут {pdf_timeout} секунд. Файл пропущен.")
+            return ''
+        return result.get('text', '')
+    else:
+        raise ValueError(f"Unsupported file type: {ext}")
+
+def extract_text_from_bytes(content: bytes, filename: str, pdf_timeout=180):
+    """
+    Извлекает текст из файла, находящегося в памяти (bytes).
+    """
+    ext = os.path.splitext(filename)[-1].lower()
+    if ext == '.txt':
+        try:
+            return content.decode('utf-8')
+        except UnicodeDecodeError:
+            return content.decode('cp1251', errors='ignore')
+    elif ext == '.docx':
+        try:
+            import docx
+        except ImportError:
+            raise ImportError("Модуль python-docx не установлен. Установите его с помощью 'pip install python-docx'")
+        try:
+            file_like = io.BytesIO(content)
+            doc = docx.Document(file_like)
+            return "\n".join([p.text for p in doc.paragraphs])
+        except Exception as e:
+            logging.error(f"Ошибка чтения docx из bytes: {e}")
+            return ''
+    elif ext == '.pdf':
+        try:
+            import pdfplumber
+        except ImportError:
+            raise ImportError("Модуль pdfplumber не установлен. Установите его с помощью 'pip install pdfplumber'")
+        result = {}
+        def pdf_worker():
+            try:
+                with pdfplumber.open(io.BytesIO(content)) as pdf:
+                    result['text'] = "\n".join(page.extract_text() or '' for page in pdf.pages)
+            except Exception as e:
+                result['text'] = ''
+                logging.error(f"Ошибка чтения PDF из bytes: {e}")
+
+        import threading
+        thread = threading.Thread(target=pdf_worker)
+        thread.start()
+        thread.join(timeout=pdf_timeout)
+        if thread.is_alive():
+            logging.error(f"PDF обработка (bytes) превысила таймаут {pdf_timeout} секунд. Файл пропущен.")
             return ''
         return result.get('text', '')
     else:
